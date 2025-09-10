@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Option CSV De-dupe — Symbol Only (sortable)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: Arial, sans-serif; background:#111; color:#eee; margin:20px; }
+  h1 { font-size:18px; margin-bottom:4px; }
+  .sub { color:#aaa; font-size:13px; margin:0 0 12px 0; }
+  .card { background:#1b1b1b; padding:16px; border-radius:12px; }
+  input[type="file"] { color:#eee; }
+  button { margin-left:10px; padding:6px 12px; }
+  table { width:100%; border-collapse: collapse; margin-top:15px; font-size:13px; }
+  th,td { padding:6px 8px; border-bottom:1px solid #333; white-space:nowrap; cursor:pointer; }
+  th { background:#222; position:sticky; top:0; }
+  tr:hover { background:#181818; }
+  .stat { margin:10px 8px 0 0; display:inline-block; font-size:12px; color:#aaa; }
+  a { color:#9cf; }
+</style>
+</head>
+<body>
+  <h1>Deduplicate by Symbol — keep highest Ann Rtn</h1>
+  <p class="sub">One row per Symbol. Keeps the row with the highest Annualized Return, sorts by Ann Rtn. Click headers to re-sort.</p>
+
+  <div class="card">
+    <input id="csvfile" type="file" accept=".csv">
+    <button id="process">Deduplicate</button>
+    <a id="download" download="deduped.csv" style="display:none;">Download deduped CSV</a>
+
+    <div id="stats"></div>
+    <div id="tablewrap"></div>
+  </div>
+
+<script>
+function parseCSV(text){
+  const rows=[]; let i=0,cur=[],cell="",inQ=false;
+  while(i<text.length){
+    const c=text[i];
+    if(inQ){
+      if(c==='\"'){ if(text[i+1]==='\"'){ cell+='\"'; i+=2; continue; } inQ=false; i++; continue; }
+      cell+=c; i++; continue;
+    } else {
+      if(c==='\"'){ inQ=true; i++; continue; }
+      if(c===','){ cur.push(cell); cell=""; i++; continue; }
+      if(c==='\n' || c==='\r'){ if(c==='\r' && text[i+1]==='\n') i++; cur.push(cell); rows.push(cur); cur=[]; cell=""; i++; continue; }
+      cell+=c; i++; continue;
+    }
+  }
+  if(cell!=="" || cur.length>0){ cur.push(cell); rows.push(cur); }
+  return rows;
+}
+function toNum(x){ if(!x) return NaN; let s=String(x).replace(/,/g,"").trim(); if(s.endsWith("%")) s=s.slice(0,-1); return parseFloat(s); }
+function norm(s){ return String(s||"").toLowerCase().trim(); }
+
+function dedupeCSV(text){
+  const rows=parseCSV(text); if(rows.length<2) throw "CSV empty";
+  const headers=rows[0];
+  const map={};
+  headers.forEach((h,i)=>{ const nh=norm(h);
+    if(nh.includes("symbol")) map.symbol=i;
+    if(nh.includes("ann rtn")||nh.includes("annual")) map.ann=i;
+  });
+  if(map.symbol===undefined || map.ann===undefined) throw "Missing Symbol or Ann Rtn column";
+
+  const best=new Map();
+  for(let r=1;r<rows.length;r++){
+    const row=rows[r]; if(!row.length) continue;
+    const key=String(row[map.symbol]||"").trim().toUpperCase();
+    const ann=toNum(row[map.ann]);
+    if(!best.has(key)){ best.set(key,{row,ann}); }
+    else { if(ann > best.get(key).ann){ best.set(key,{row,ann}); } }
+  }
+  const kept=Array.from(best.values()).map(x=>x.row);
+  kept.sort((a,b)=> toNum(b[map.ann]) - toNum(a[map.ann]));
+  const csv=[headers].concat(kept).map(r=>r.map(v=> `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+  return {headers,kept,total:rows.length-1,keptCount:kept.length,csv,annIdx:map.ann};
+}
+
+function render(headers,rows,annIdx){
+  const wrap=document.getElementById("tablewrap");
+  let html="<table id='outTable'><thead><tr>";
+  headers.forEach((h,i)=> html+=`<th data-col='${i}'>${h}${i===annIdx?" ⬇":""}</th>`);
+  html+="</tr></thead><tbody>";
+  rows.slice(0,500).forEach(r=>{ html+="<tr>"+r.map(c=>`<td>${c}</td>`).join("")+"</tr>"; });
+  html+="</tbody></table>";
+  wrap.innerHTML=html;
+
+  // Enable sorting on click
+  const ths=document.querySelectorAll("#outTable th");
+  ths.forEach(th=>{
+    th.onclick=()=>{
+      const col=parseInt(th.dataset.col,10);
+      const sorted=rows.slice().sort((a,b)=> toNum(b[col]) - toNum(a[col]));
+      render(headers,sorted,col);
+    };
+  });
+}
+
+document.getElementById("process").onclick=()=>{
+  const f=document.getElementById("csvfile").files[0]; if(!f){ alert("Pick a CSV"); return; }
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try{
+      const res=dedupeCSV(reader.result);
+      render(res.headers,res.kept,res.annIdx);
+      document.getElementById("stats").innerHTML=`<div class="stat">Input: ${res.total}</div><div class="stat">Kept: ${res.keptCount}</div><div class="stat">Removed: ${res.total-res.keptCount}</div>`;
+      const blob=new Blob([res.csv],{type:"text/csv"}); const url=URL.createObjectURL(blob);
+      const dl=document.getElementById("download"); dl.href=url; dl.style.display="inline-block";
+    }catch(e){ alert("Error: "+e); }
+  };
+  reader.readAsText(f);
+};
+</script>
+</body>
+</html>
