@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Option CSV De-dupe — Symbol Only (sortable)</title>
+<title>Option CSV De-dupe — Symbol Only (sortable + TradingView export)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   body { font-family: Arial, sans-serif; background:#111; color:#eee; margin:20px; }
@@ -10,25 +10,42 @@
   .sub { color:#aaa; font-size:13px; margin:0 0 12px 0; }
   .card { background:#1b1b1b; padding:16px; border-radius:12px; }
   input[type="file"] { color:#eee; }
-  button { margin-left:10px; padding:6px 12px; }
+  button { margin-left:10px; padding:6px 12px; cursor:pointer; }
   table { width:100%; border-collapse: collapse; margin-top:15px; font-size:13px; }
-  th,td { padding:6px 8px; border-bottom:1px solid #333; white-space:nowrap; cursor:pointer; }
-  th { background:#222; position:sticky; top:0; }
+  th,td { padding:6px 8px; border-bottom:1px solid #333; white-space:nowrap; }
+  th { background:#222; position:sticky; top:0; cursor:pointer; }
   tr:hover { background:#181818; }
   .stat { margin:10px 8px 0 0; display:inline-block; font-size:12px; color:#aaa; }
   a { color:#9cf; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:#aaa; font-size:12px; }
+  .inline { display:inline-flex; gap:8px; align-items:center; }
+  input[type="text"] { background:#222; border:1px solid #333; color:#eee; padding:6px 8px; border-radius:8px; }
 </style>
 </head>
 <body>
   <h1>Deduplicate by Symbol — keep highest Ann Rtn</h1>
-  <p class="sub">One row per Symbol. Keeps the row with the highest Annualized Return, sorts by Ann Rtn. Click headers to re-sort.</p>
+  <p class="sub">One row per Symbol. Keeps the row with the highest Annualized Return, sorts by Ann Rtn. Click headers to re-sort. Export a TradingView watchlist in one click.</p>
 
   <div class="card">
-    <input id="csvfile" type="file" accept=".csv">
-    <button id="process">Deduplicate</button>
-    <a id="download" download="deduped.csv" style="display:none;">Download deduped CSV</a>
+    <div class="row">
+      <input id="csvfile" type="file" accept=".csv">
+      <button id="process">Deduplicate</button>
+      <a id="download" download="deduped.csv" style="display:none;">Download deduped CSV</a>
+      <span id="stats"></span>
+    </div>
 
-    <div id="stats"></div>
+    <div class="row" style="margin-top:10px;">
+      <div class="inline">
+        <button id="exportTV" disabled>Export TradingView Watchlist</button>
+        <label class="muted">Prefix
+          <input id="tvPrefix" type="text" placeholder="e.g. NASDAQ:" style="width:120px;">
+        </label>
+        <a id="downloadTV" download="tradingview_watchlist.txt" style="display:none;">Download watchlist</a>
+        <span id="copyNote" class="muted"></span>
+      </div>
+    </div>
+
     <div id="tablewrap"></div>
   </div>
 
@@ -50,18 +67,26 @@ function parseCSV(text){
   if(cell!=="" || cur.length>0){ cur.push(cell); rows.push(cur); }
   return rows;
 }
-function toNum(x){ if(!x) return NaN; let s=String(x).replace(/,/g,"").trim(); if(s.endsWith("%")) s=s.slice(0,-1); return parseFloat(s); }
+function toNum(x){ if(x===null||x===undefined) return NaN; let s=String(x).replace(/,/g,"").trim(); if(s.endsWith("%")) s=s.slice(0,-1); const v=parseFloat(s); return Number.isFinite(v)?v:NaN; }
 function norm(s){ return String(s||"").toLowerCase().trim(); }
+
+let keptRowsGlobal = [];
+let headersGlobal = [];
+let annIdxGlobal = -1;
+let symbolIdxGlobal = -1;
 
 function dedupeCSV(text){
   const rows=parseCSV(text); if(rows.length<2) throw "CSV empty";
-  const headers=rows[0];
+  const headers=rows[0]; headersGlobal = headers.slice();
   const map={};
   headers.forEach((h,i)=>{ const nh=norm(h);
     if(nh.includes("symbol")) map.symbol=i;
     if(nh.includes("ann rtn")||nh.includes("annual")) map.ann=i;
   });
   if(map.symbol===undefined || map.ann===undefined) throw "Missing Symbol or Ann Rtn column";
+
+  symbolIdxGlobal = map.symbol;
+  annIdxGlobal = map.ann;
 
   const best=new Map();
   for(let r=1;r<rows.length;r++){
@@ -73,6 +98,8 @@ function dedupeCSV(text){
   }
   const kept=Array.from(best.values()).map(x=>x.row);
   kept.sort((a,b)=> toNum(b[map.ann]) - toNum(a[map.ann]));
+  keptRowsGlobal = kept.slice();
+
   const csv=[headers].concat(kept).map(r=>r.map(v=> `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
   return {headers,kept,total:rows.length-1,keptCount:kept.length,csv,annIdx:map.ann};
 }
@@ -82,19 +109,40 @@ function render(headers,rows,annIdx){
   let html="<table id='outTable'><thead><tr>";
   headers.forEach((h,i)=> html+=`<th data-col='${i}'>${h}${i===annIdx?" ⬇":""}</th>`);
   html+="</tr></thead><tbody>";
-  rows.slice(0,500).forEach(r=>{ html+="<tr>"+r.map(c=>`<td>${c}</td>`).join("")+"</tr>"; });
+  rows.slice(0,1000).forEach(r=>{ html+="<tr>"+r.map(c=>`<td>${c}</td>`).join("")+"</tr>"; });
   html+="</tbody></table>";
   wrap.innerHTML=html;
 
-  // Enable sorting on click
+  // header sorting
   const ths=document.querySelectorAll("#outTable th");
   ths.forEach(th=>{
     th.onclick=()=>{
       const col=parseInt(th.dataset.col,10);
-      const sorted=rows.slice().sort((a,b)=> toNum(b[col]) - toNum(a[col]));
-      render(headers,sorted,col);
+      const numSorted=rows.slice().sort((a,b)=> toNum(b[col]) - toNum(a[col]));
+      // if both are NaN, fall back to string compare
+      const mixedSorted=numSorted.some(r=>!Number.isFinite(toNum(r[col])))
+        ? rows.slice().sort((a,b)=> String(b[col]).localeCompare(String(a[col])))
+        : numSorted;
+      keptRowsGlobal = mixedSorted.slice();
+      render(headers, keptRowsGlobal, col);
     };
   });
+  document.getElementById("exportTV").disabled = rows.length===0;
+}
+
+function buildTVList(){
+  const prefix = (document.getElementById("tvPrefix").value||"").trim();
+  const seen=new Set();
+  const out=[];
+  keptRowsGlobal.forEach(r=>{
+    const raw = r[symbolIdxGlobal] ?? "";
+    const sym = String(raw).trim().toUpperCase();
+    if(!sym) return;
+    if(seen.has(sym)) return;
+    seen.add(sym);
+    out.push(prefix ? `${prefix}${sym}` : sym);
+  });
+  return out.join("\n");
 }
 
 document.getElementById("process").onclick=()=>{
@@ -104,12 +152,31 @@ document.getElementById("process").onclick=()=>{
     try{
       const res=dedupeCSV(reader.result);
       render(res.headers,res.kept,res.annIdx);
-      document.getElementById("stats").innerHTML=`<div class="stat">Input: ${res.total}</div><div class="stat">Kept: ${res.keptCount}</div><div class="stat">Removed: ${res.total-res.keptCount}</div>`;
+      document.getElementById("stats").innerHTML=`<span class="stat">Input: ${res.total}</span><span class="stat">Kept: ${res.keptCount}</span><span class="stat">Removed: ${res.total-res.keptCount}</span>`;
       const blob=new Blob([res.csv],{type:"text/csv"}); const url=URL.createObjectURL(blob);
       const dl=document.getElementById("download"); dl.href=url; dl.style.display="inline-block";
     }catch(e){ alert("Error: "+e); }
   };
   reader.readAsText(f);
+};
+
+document.getElementById("exportTV").onclick=async ()=>{
+  const list = buildTVList();
+  if(!list){ alert("No symbols to export"); return; }
+  // copy to clipboard
+  try{
+    await navigator.clipboard.writeText(list);
+    document.getElementById("copyNote").textContent = "Copied";
+    setTimeout(()=>{ document.getElementById("copyNote").textContent=""; }, 1500);
+  }catch(e){
+    document.getElementById("copyNote").textContent = "Copy failed";
+    setTimeout(()=>{ document.getElementById("copyNote").textContent=""; }, 2000);
+  }
+  // download txt
+  const blob=new Blob([list],{type:"text/plain;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const dl=document.getElementById("downloadTV");
+  dl.href=url; dl.style.display="inline-block";
 };
 </script>
 </body>
